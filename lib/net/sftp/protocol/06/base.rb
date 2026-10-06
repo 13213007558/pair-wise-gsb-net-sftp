@@ -51,6 +51,19 @@ module Net; module SFTP; module Protocol; module V06
       send_request(FXP_UNBLOCK, :string, handle, :int64, offset, :int64, length)
     end
 
+    # Parses a version 6 FXP_STATUS packet. In addition to the numeric status
+    # code, the packet may contain an error message and the message language.
+    def parse_status_packet(packet)
+      data = { :code => packet.read_long }
+
+      unless packet.eof?
+        data[:message] = packet.read_string
+        data[:language] = packet.read_string unless packet.eof?
+      end
+
+      data
+    end
+
     protected
 
       # Returns the Attributes class used by this version of the protocol

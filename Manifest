@@ -46,6 +46,7 @@ test/test_dir.rb
 test/test_download.rb
 test/test_file.rb
 test/test_file_factory.rb
+test/test_locks.rb
 test/test_packet.rb
 test/test_protocol.rb
 test/test_request.rb

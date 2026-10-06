@@ -1,3 +1,4 @@
+require 'set'
 require 'net/ssh'
 require 'net/sftp/constants'
 require 'net/sftp/errors'
@@ -45,6 +46,7 @@ module Net; module SFTP
   class Session
     include Net::SSH::Loggable
     include Net::SFTP::Constants::PacketTypes
+    include Net::SFTP::Constants::StatusCodes
 
     # The highest protocol version supported by the Net::SFTP library.
     HIGHEST_PROTOCOL_VERSION_SUPPORTED = 6
@@ -68,6 +70,10 @@ module Net; module SFTP
     # the server has not yet responded to will be represented here.
     attr_reader :pending_requests
 
+    # The byte-range locks associated with open handles. Each entry separates
+    # requests awaiting a server response from ranges that were acquired.
+    attr_reader :locks
+
     # Creates a new Net::SFTP instance atop the given Net::SSH connection.
     # This will return immediately, before the SFTP connection has been properly
     # initialized. Once the connection is ready, the given block will be called.
@@ -82,6 +88,8 @@ module Net; module SFTP
       self.logger = session.logger
       @state      = :closed
       @pending_requests = {}
+      @locks = Hash.new { |hash, handle| hash[handle] = { :pending => Set.new, :acquired => [] } }
+      @held_close_responses = Hash.new { |hash, handle| hash[handle] = [] }
 
       connect(&block)
     end
@@ -207,7 +215,9 @@ module Net; module SFTP
       #   end
       #   sftp.loop
       def close(handle, &callback)
-        request :close, handle, &callback
+        request = close_request(handle, &callback)
+        request[:handle] = handle
+        request
       end
 
       # Identical to #close, but blocks until the server responds. It will
@@ -677,21 +687,24 @@ module Net; module SFTP
       # The +handle+ parameter is a file handle, as obtained by the #open method.
       #
       # The +offset+ and +length+ parameters describe the location and size of
-      # the byte range.
+      # the byte range. A +length+ of zero means "from +offset+ to end of file".
       #
       # The +mask+ describes how the lock should be defined, and consists of
       # some combination of the following bit masks:
       #
-      # * 0x0040 - Read lock. The byte range may not be accessed for reading
-      #   by via any other handle, though it may be written to.
-      # * 0x0080 - Write lock. The byte range may not be written to via any
-      #   other handle, though it may be read from.
-      # * 0x0100 - Delete lock. No other handle may delete this file.
-      # * 0x0200 - Advisory lock. The server need not honor the lock instruction.
+      # * LockTypes::READ - shared read access; it conflicts with write locks.
+      # * LockTypes::WRITE - exclusive write access; it conflicts with read,
+      #   write, and delete locks.
+      # * LockTypes::DELETE - prevents deletion; it conflicts with delete locks.
+      # * LockTypes::ADVISORY - the server need not enforce the lock.
+      #
+      # READ, WRITE, and DELETE may be combined with bitwise OR. A lock
+      # conflict is reported as an FX_LOCK_CONFLICT response, rather than a
+      # transport failure.
       #
       # Once created, the lock may be removed via the #unblock method.
       def block(handle, offset, length, mask, &callback)
-        request :block, handle, offset, length, mask, &callback
+        register_lock_request(:block, handle, offset, length, mask, &callback)
       end
 
       # Identical to #block, but blocks until the server responds. It will raise
@@ -708,9 +721,11 @@ module Net; module SFTP
       # Removes a previously created byte-range lock. This operation is only
       # available in protocol versions 6 and higher. The +offset+ and +length+
       # parameters must exactly match those that were given to #block when the
-      # lock was acquired.
+      # lock was acquired. A +length+ of zero matches the same end-of-file
+      # range. Releasing an unmatched range returns the protocol's
+      # FX_NO_MATCHING_BYTE_RANGE_LOCK status.
       def unblock(handle, offset, length, &callback)
-        request :unblock, handle, offset, length, &callback
+        register_lock_request(:unblock, handle, offset, length, &callback)
       end
 
       # Identical to #unblock, but blocks until the server responds. It will raise
@@ -834,6 +849,73 @@ module Net; module SFTP
         pending_requests[request.id] = request
       end
 
+      # Registers a byte-range lock request and associates it with the handle
+      # for which it was made.
+      def register_lock_request(type, handle, offset, length, *args, &callback)
+        length = normalized_lock_length(length)
+        request = request(type, handle, offset, length, *args, &callback)
+        locks[handle][:pending] << request
+        request[:handle] = handle
+        request[:offset] = offset
+        request[:length] = normalized_lock_length(length)
+        request[:mask] = args.first if type == :block
+        request
+      end
+
+      # Removes a completed lock request from the handle's pending set, records
+      # acquired locks, releases exact unblock matches, and delivers any close
+      # response that the server returned while the lock request was pending.
+      def complete_lock_request(request)
+        handle = request[:handle]
+        return unless handle
+
+        locks[handle][:pending].delete(request)
+
+        if request.response.ok?
+          case request.type
+          when :block
+            locks[handle][:acquired] << { :id => request.id, :offset => request[:offset],
+                                         :length => request[:length], :mask => request[:mask] }
+          when :unblock
+            locks[handle][:acquired].reject! do |lock|
+              lock[:offset] == request[:offset] && lock[:length] == request[:length]
+            end
+          end
+        end
+
+        deliver_held_close(handle)
+      end
+
+      # Sends the close packet. A v6 server is responsible for giving all
+      # requests on the handle definite results when it processes the close. If
+      # its close response arrives first, it is held until those lock responses
+      # have been delivered.
+      def close_request(handle, &callback)
+        request = request(:close, handle, &callback)
+        request
+      end
+
+      def hold_close_response?(request)
+        request.type == :close && request[:handle] && locks[request[:handle]][:pending].any?
+      end
+
+      def deliver_held_close(handle)
+        return if locks[handle][:pending].any?
+
+        held_responses = @held_close_responses.delete(handle)
+        return unless held_responses
+
+        held_responses.each do |held|
+          request = held[:request]
+          pending_requests.delete(request.id)
+          request.respond_to(held[:packet])
+        end
+      end
+
+      def normalized_lock_length(length)
+        (length || 0).to_i
+      end
+
       # Waits for the given request to complete. If the response is
       # EOF, nil is returned. If the response was not successful
       # (e.g., !response.ok?), a StatusException will be raised.
@@ -884,6 +966,15 @@ module Net; module SFTP
       # Called when the SSH server closes the underlying channel.
       def when_channel_closed(channel)
         debug { "sftp channel closed" }
+        pending_requests.each_value do |request|
+          request.respond_with_status(FX_CONNECTION_LOST, "connection lost")
+        end
+        pending_requests.clear
+        @held_close_responses.each_value do |held_responses|
+          held_responses.each { |held| held[:request].respond_with_status(FX_CONNECTION_LOST, "connection lost") }
+        end
+        locks.clear
+        @held_close_responses.clear
         @channel = nil
         @state = :closed
       end
@@ -936,6 +1027,8 @@ module Net; module SFTP
 
         @protocol = Protocol.load(self, negotiated_version)
         @pending_requests = {}
+        @locks = Hash.new { |hash, open_handle| hash[open_handle] = { :pending => Set.new, :acquired => [] } }
+        @held_close_responses = Hash.new { |hash, open_handle| hash[open_handle] = [] }
 
         @state = :open
         @on_ready.each { |callback| callback.call(self) }
@@ -947,7 +1040,15 @@ module Net; module SFTP
       def dispatch_request(packet)
         id = packet.read_long
         request = pending_requests.delete(id) or raise Net::SFTP::Exception, "no such request `#{id}'"
+
+        if hold_close_response?(request)
+          @held_close_responses[request[:handle]] << { :request => request, :packet => packet }
+          pending_requests[id] = request
+          return
+        end
+
         request.respond_to(packet)
+        complete_lock_request(request) if request.type == :block || request.type == :unblock
       end
   end
 

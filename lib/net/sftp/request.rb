@@ -86,6 +86,17 @@ module Net; module SFTP
 
         callback.call(@response) if callback
       end
+
+      # Completes the request without a server packet. This is used when the
+      # SFTP transport closes before a pending request can receive a response.
+      def respond_with_status(code, message=nil) #:nodoc:
+        data = { :type => Net::SFTP::Constants::PacketTypes::FXP_STATUS,
+                 :code => code }
+        data[:message] = message if message
+        @response = Response.new(self, data)
+
+        callback.call(@response) if callback
+      end
   end
 
 end; end

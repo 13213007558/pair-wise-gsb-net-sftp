@@ -664,6 +664,31 @@ class SessionTest < Net::SFTP::TestCase
     assert response.ok?
   end
 
+  def test_close_response_arriving_before_pending_lock_is_delivered_after_lock
+    events = []
+
+    expect_sftp_session :server_version => 6 do |channel|
+      channel.sends_packet(FXP_BLOCK, :long, 0, :string, "handle", :int64, 0, :int64, 10, :long, 0x80)
+      channel.sends_packet(FXP_CLOSE, :long, 1, :string, "handle")
+      channel.gets_packet(FXP_STATUS, :long, 1, :long, 0)
+      channel.gets_packet(FXP_STATUS, :long, 0, :long, 17)
+    end
+
+    assert_scripted_command do
+      lock = sftp.block("handle", 0, 10, LockTypes::WRITE) do |response|
+        events << [:lock, response.code]
+      end
+      close = sftp.close("handle") do |response|
+        events << [:close, response.code]
+      end
+
+      sftp.loop { lock.pending? || close.pending? }
+    end
+
+    assert_equal [[:lock, 17], [:close, 0]], events
+    assert_empty sftp.locks["handle"][:acquired]
+  end
+
   private
 
     def assert_not_implemented(server_version, command, *args)

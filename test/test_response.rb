@@ -50,4 +50,19 @@ class ResponseTest < Net::SFTP::TestCase
     response = Net::SFTP::Response.new(mock("response"), :code => 14)
     assert_equal false, response.eof?
   end
+
+  def test_lock_conflict_should_be_distinct_from_connection_loss
+    conflict = Net::SFTP::Response.new(mock("response"), :code => 17)
+    interrupted = Net::SFTP::Response.new(mock("response"), :code => 7)
+
+    assert conflict.lock_conflict?
+    assert !conflict.connection_lost?
+    assert interrupted.connection_lost?
+    assert !interrupted.lock_conflict?
+  end
+
+  def test_no_matching_byte_range_lock_status
+    response = Net::SFTP::Response.new(mock("response"), :code => 31)
+    assert response.no_matching_byte_range_lock?
+  end
 end

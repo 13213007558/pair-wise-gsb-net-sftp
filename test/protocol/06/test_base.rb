@@ -39,6 +39,19 @@ class Protocol::V06::TestBase < Protocol::V05::TestBase
     assert_equal 0, @base.unblock("handle", 1234, 4567)
   end
 
+  def test_parse_status_packet_should_read_v6_message_and_language
+    packet = Net::SSH::Buffer.from(:long, 17, :string, "lock conflict", :string, "en")
+    assert_equal({ :code => 17, :message => "lock conflict", :language => "en" },
+                 @base.parse_status_packet(packet))
+  end
+
+  def test_lock_type_constants_expose_read_write_delete_combinations
+    assert_equal 0x00000040, LockTypes::READ
+    assert_equal 0x00000080, LockTypes::WRITE
+    assert_equal 0x00000100, LockTypes::DELETE
+    assert_equal LockTypes::READ | LockTypes::WRITE | LockTypes::DELETE, LockTypes::ALL
+  end
+
   private
 
     def driver

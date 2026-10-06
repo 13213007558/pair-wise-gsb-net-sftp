@@ -64,6 +64,25 @@ module Net; module SFTP
       code == FX_EOF
     end
 
+    # Returns +true+ when an unblock request did not identify a matching lock
+    # or byte range held by the requesting handle.
+    def no_matching_byte_range_lock?
+      code == FX_NO_MATCHING_BYTE_RANGE_LOCK
+    end
+
+    # Returns +true+ if the status code is FX_LOCK_CONFLICT; +false+ otherwise.
+    # A lock conflict is a normal response from the server and is distinct
+    # from a transport or connection failure.
+    def lock_conflict?
+      code == FX_LOCK_CONFLICT
+    end
+
+    # Returns +true+ if the request could not be completed because the SFTP
+    # transport or connection was lost.
+    def connection_lost?
+      code == FX_CONNECTION_LOST
+    end
+
     #--
     MAP = constants.inject({}) do |memo, name|
       next memo unless name =~ /^FX_(.*)/
