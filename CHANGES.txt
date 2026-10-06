@@ -1,5 +1,9 @@
 === 3.0.0
 
+* Add Net::SFTP::Session#copy_data/#copy_data! for server-side file range
+  copies, using the OpenSSH "copy-data" extension when the server advertises
+  it (see Net::SFTP::Session#extensions) and falling back to bounded
+  read/write chunks otherwise
 * Pass protocol version via Net::SFTP.start [#107]
 * Net-ssh 6.0 support [#106]
 

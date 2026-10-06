@@ -6,8 +6,9 @@ module Net module SFTP
   module Constants
 
     # The various packet types supported by SFTP protocol versions 1 through 6.
-    # The FXP_EXTENDED and FXP_EXTENDED_REPLY packet types are not currently
-    # understood by Net::SFTP.
+    # FXP_EXTENDED is used to invoke protocol extensions (like the OpenSSH
+    # "copy-data" extension; see Net::SFTP::Session#copy_data), and
+    # FXP_EXTENDED_REPLY is the corresponding generic reply packet.
     module PacketTypes
       FXP_INIT           = 1
       FXP_VERSION        = 2

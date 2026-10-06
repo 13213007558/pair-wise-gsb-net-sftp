@@ -104,6 +104,20 @@ class Protocol::V01::TestBase < Net::SFTP::TestCase
     assert_equal 0, @base.write("handle", 1234, "data")
   end
 
+  def test_copy_data_should_send_extended_copy_data_packet
+    @session.expects(:send_packet).with(FXP_EXTENDED, :long, 0,
+      :string, "copy-data",
+      :string, "read-handle", :int64, 100,
+      :string, "write-handle", :int64, 200,
+      :int64, 4096)
+    assert_equal 0, @base.copy_data("read-handle", 100, "write-handle", 200, 4096)
+  end
+
+  def test_parse_extended_reply_packet_should_return_raw_payload
+    packet = Net::SSH::Buffer.from(:string, "payload")
+    assert_equal({ :reply => raw(:string, "payload") }, @base.parse_extended_reply_packet(packet))
+  end
+
   def test_lstat_should_send_lstat_packet
     @session.expects(:send_packet).with(FXP_LSTAT, :long, 0, :string, "/path/to/file")
     assert_equal 0, @base.lstat("/path/to/file")

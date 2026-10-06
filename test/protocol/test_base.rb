@@ -35,6 +35,12 @@ class Protocol::TestBase < Net::SFTP::TestCase
     assert_equal :result, @base.parse(packet)
   end
 
+  def test_parse_with_extended_reply_packet_should_delegate_to_parse_extended_reply_packet
+    packet = stub('packet', :type => FXP_EXTENDED_REPLY)
+    @base.expects(:parse_extended_reply_packet).with(packet).returns(:result)
+    assert_equal :result, @base.parse(packet)
+  end
+
   def test_parse_with_unknown_packet_should_raise_exception
     packet = stub('packet', :type => FXP_WRITE)
     assert_raises(NotImplementedError) { @base.parse(packet) }

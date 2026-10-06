@@ -49,6 +49,13 @@ module Net; module SFTP; module Protocol; module V01
       { :attrs => attribute_factory.from_buffer(packet) }
     end
 
+    # Parses the given FXP_EXTENDED_REPLY packet and returns a hash with one
+    # key, :reply, which contains the raw (extension-specific) payload of the
+    # packet.
+    def parse_extended_reply_packet(packet)
+      { :reply => packet.read(packet.available) }
+    end
+
     # Parses the given FXP_NAME packet and returns a hash with one key, :names,
     # which references an array of Name objects.
     def parse_name_packet(packet)
@@ -110,6 +117,21 @@ module Net; module SFTP; module Protocol; module V01
     # via a FXP_HANDLE packet. Returns the new packet id.
     def write(handle, offset, data)
       send_request(FXP_WRITE, :string, handle, :int64, offset, :string, data)
+    end
+
+    # Sends a FXP_EXTENDED packet to the server, requesting that +length+
+    # bytes be copied on the server from +read_offset+ within the file
+    # identified by +read_handle+, to +write_offset+ within the file
+    # identified by +write_handle+. This uses the OpenSSH "copy-data"
+    # extension, and the server must have advertised that extension during
+    # version negotiation (see Net::SFTP::Session#extensions). Both handles
+    # must have been returned via FXP_HANDLE packets. Returns the new packet
+    # id.
+    def copy_data(read_handle, read_offset, write_handle, write_offset, length)
+      send_request(FXP_EXTENDED, :string, "copy-data",
+        :string, read_handle, :int64, read_offset,
+        :string, write_handle, :int64, write_offset,
+        :int64, length)
     end
 
     # Sends a FXP_LSTAT packet to the server, requesting a FXP_ATTR response

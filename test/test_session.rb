@@ -155,6 +155,97 @@ class SessionTest < Net::SFTP::TestCase
     assert response.ok?
   end
 
+  def test_version_extensions_should_be_retained
+    expect_sftp_session :extensions => { "copy-data" => "1", "posix-rename@openssh.com" => "1" }
+    assert_scripted { sftp.connect! }
+    assert_equal({ "copy-data" => "1", "posix-rename@openssh.com" => "1" }, sftp.extensions)
+  end
+
+  def test_version_without_extensions_should_have_empty_extensions
+    expect_sftp_session
+    assert_scripted { sftp.connect! }
+    assert_equal({}, sftp.extensions)
+  end
+
+  def test_copy_data_with_extension_should_send_extended_request_and_invoke_callback
+    expect_copy_data_extension
+    assert_command_with_callback(:copy_data, "read-handle", 16, "write-handle", 48, 32) do |response|
+      assert response.ok?
+    end
+  end
+
+  def test_copy_data_bang_with_extension_should_return_requested_length
+    expect_copy_data_extension
+    copied = assert_synchronous_command(:copy_data!, "read-handle", 16, "write-handle", 48, 32)
+    assert_equal 32, copied
+  end
+
+  def test_copy_data_bang_with_extension_should_raise_on_error
+    expect_copy_data_extension(:fail => 4)
+    assert_raises(Net::SFTP::StatusException) do
+      assert_synchronous_command(:copy_data!, "read-handle", 16, "write-handle", 48, 32)
+    end
+  end
+
+  def test_copy_data_with_extension_should_not_interfere_with_other_pending_requests
+    expect_sftp_session :extensions => { "copy-data" => "1" } do |channel|
+      channel.sends_packet(FXP_EXTENDED, :long, 0, :string, "copy-data",
+        :string, "read-handle", :int64, 0, :string, "write-handle", :int64, 8, :int64, 8)
+      channel.sends_packet(FXP_READ, :long, 1, :string, "other-handle", :int64, 0, :long, 5)
+      # the server answers the read (request 1) before the copy (request 0)
+      channel.gets_packet(FXP_DATA, :long, 1, :string, "hello")
+      channel.gets_packet(FXP_STATUS, :long, 0, :long, 0)
+    end
+
+    copy_response = read_response = nil
+    assert_scripted_command do
+      sftp.copy_data("read-handle", 0, "write-handle", 8, 8) { |response| copy_response = response }
+      sftp.read("other-handle", 0, 5) { |response| read_response = response }
+    end
+
+    assert copy_response.ok?
+    assert read_response.ok?
+    assert_equal "hello", read_response[:data]
+  end
+
+  def test_copy_data_without_extension_should_fall_back_to_chunked_read_write
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "handle", :int64, 0, :long, 6)
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "abcdef")
+      channel.sends_packet(FXP_WRITE, :long, 1, :string, "handle", :int64, 6, :string, "abcdef")
+      channel.gets_packet(FXP_STATUS, :long, 1, :long, 0)
+    end
+
+    assert_command_with_callback(:copy_data, "handle", 0, "handle", 6, 6) do |response|
+      assert response.ok?
+      assert_equal 6, response[:copied]
+    end
+  end
+
+  def test_copy_data_bang_without_extension_should_return_bytes_actually_copied
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "handle", :int64, 0, :long, 6)
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "abcdef")
+      channel.sends_packet(FXP_WRITE, :long, 1, :string, "handle", :int64, 6, :string, "abcdef")
+      channel.gets_packet(FXP_STATUS, :long, 1, :long, 0)
+    end
+
+    copied = assert_synchronous_command(:copy_data!, "handle", 0, "handle", 6, 6)
+    assert_equal 6, copied
+  end
+
+  def test_copy_data_bang_without_extension_should_report_partial_copy_on_write_failure
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "handle", :int64, 0, :long, 6)
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "abcdef")
+      channel.sends_packet(FXP_WRITE, :long, 1, :string, "handle", :int64, 6, :string, "abcdef")
+      channel.gets_packet(FXP_STATUS, :long, 1, :long, 4)
+    end
+
+    copied = assert_synchronous_command(:copy_data!, "handle", 0, "handle", 6, 6)
+    assert_equal 0, copied
+  end
+
   def test_v1_lstat_should_send_lstat_request_and_invoke_callback
     expect_sftp_session :server_version => 1 do |channel|
       channel.sends_packet(FXP_LSTAT, :long, 0, :string, "/path/to/file")
@@ -702,6 +793,18 @@ class SessionTest < Net::SFTP::TestCase
       assert_command_with_callback(:open, *args) do |response|
         assert response.ok?
         assert_equal "handle", response[:handle]
+      end
+    end
+
+    def expect_copy_data_extension(options={})
+      fail = options.delete(:fail)
+
+      expect_sftp_session :extensions => { "copy-data" => "1" } do |channel|
+        channel.sends_packet(FXP_EXTENDED, :long, 0, :string, "copy-data",
+          :string, "read-handle", :int64, 16,
+          :string, "write-handle", :int64, 48,
+          :int64, 32)
+        channel.gets_packet(FXP_STATUS, :long, 0, :long, fail || 0)
       end
     end
 

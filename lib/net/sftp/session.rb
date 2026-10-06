@@ -6,6 +6,7 @@ require 'net/sftp/request'
 require 'net/sftp/operations/dir'
 require 'net/sftp/operations/upload'
 require 'net/sftp/operations/download'
+require 'net/sftp/operations/copy'
 require 'net/sftp/operations/file_factory'
 
 module Net; module SFTP
@@ -64,6 +65,11 @@ module Net; module SFTP
     # querying the protocol version in effect.
     attr_reader :protocol
 
+    # The hash of extensions that the server advertised during protocol
+    # version negotiation, mapping extension names to their (raw, unparsed)
+    # extension data. Empty if the server did not advertise any extensions.
+    attr_reader :extensions
+
     # The hash of pending requests. Any requests that have been sent and which
     # the server has not yet responded to will be represented here.
     attr_reader :pending_requests
@@ -82,6 +88,7 @@ module Net; module SFTP
       self.logger = session.logger
       @state      = :closed
       @pending_requests = {}
+      @extensions = {}
 
       connect(&block)
     end
@@ -282,6 +289,66 @@ module Net; module SFTP
       #   sftp.write!(handle, 0, "hello, world!\n")
       def write!(handle, offset, data, &callback)
         wait_for(write(handle, offset, data, &callback))
+      end
+
+      # :call-seq:
+      #   copy_data(read_handle, read_offset, write_handle, write_offset, length) -> request
+      #   copy_data(read_handle, read_offset, write_handle, write_offset, length) { |response| ... } -> request
+      #
+      # Requests that +length+ bytes, starting at +read_offset+ within the
+      # file identified by +read_handle+, be copied on the server to
+      # +write_offset+ within the file identified by +write_handle+. Both
+      # handles must have been obtained via #open, and the copy happens
+      # entirely on the server: the data is never round-tripped through the
+      # client.
+      #
+      # If the server advertised the OpenSSH "copy-data" extension during
+      # version negotiation (see #extensions), a single FXP_EXTENDED request
+      # is used. Otherwise, the copy falls back to a sequence of bounded
+      # read/write chunks (see Net::SFTP::Operations::Copy), where
+      # overlapping ranges on the same handle are copied with memmove-like
+      # semantics. In that case the returned request only tracks the first
+      # chunk, so use the callback (or #copy_data!) to observe completion;
+      # the response passed to the callback will include a :copied property
+      # reporting how many bytes were actually copied.
+      #
+      #   sftp.copy_data(read_handle, 0, write_handle, 1024, 1024) do |response|
+      #     puts "copied!" if response.ok?
+      #   end
+      #   sftp.loop
+      def copy_data(read_handle, read_offset, write_handle, write_offset, length, &callback)
+        if extensions.key?("copy-data")
+          request :copy_data, read_handle, read_offset, write_handle, write_offset, length, &callback
+        else
+          Operations::Copy.copy(self, read_handle, read_offset, write_handle, write_offset, length, &callback)
+        end
+      end
+
+      # Identical to #copy_data, but blocks until the copy is complete, and
+      # returns the number of bytes that were actually copied. (The copied
+      # range always begins at +read_offset+.)
+      #
+      # When the server supports the "copy-data" extension, a
+      # StatusException is raised if the server reports an error, and the
+      # requested +length+ is returned on success. When falling back to
+      # chunked reads and writes, a short read, end-of-file, or a failed
+      # write will stop the copy early, and the number of bytes copied
+      # before that point is returned instead of raising.
+      #
+      #   copied = sftp.copy_data!(read_handle, 0, write_handle, 1024, 1024)
+      def copy_data!(read_handle, read_offset, write_handle, write_offset, length, &callback)
+        if extensions.key?("copy-data")
+          wait_for(copy_data(read_handle, read_offset, write_handle, write_offset, length, &callback))
+          length
+        else
+          copied = nil
+          copy_data(read_handle, read_offset, write_handle, write_offset, length) do |response|
+            callback.call(response) if callback
+            copied = response[:copied]
+          end
+          loop { copied.nil? }
+          copied
+        end
       end
 
       # :call-seq:
@@ -774,6 +841,7 @@ module Net; module SFTP
           @channel = session.open_channel(&method(:when_channel_confirmed))
           @packet_length = nil
           @protocol = nil
+          @extensions = {}
           @on_ready = Array(block)
         else # opening
           @on_ready << block if block
@@ -934,6 +1002,7 @@ module Net; module SFTP
           extensions[name] = data
         end
 
+        @extensions = extensions
         @protocol = Protocol.load(self, negotiated_version)
         @pending_requests = {}
 
