@@ -5,6 +5,7 @@ require 'net/sftp/protocol'
 require 'net/sftp/request'
 require 'net/sftp/operations/dir'
 require 'net/sftp/operations/upload'
+require 'net/sftp/operations/resumable_upload'
 require 'net/sftp/operations/download'
 require 'net/sftp/operations/file_factory'
 
@@ -103,6 +104,26 @@ module Net; module SFTP
       # Identical to #upload, but blocks until the upload is complete.
       def upload!(local, remote = File.basename(local), options={}, &block)
         upload(local, remote, options, &block).wait
+      end
+
+      # Initiates a resumable upload from +local+ to +remote+, asynchronously.
+      # Blocks claimed by a previous run's checkpoint are trusted only after
+      # their content has been verified against the server with SFTP READ
+      # requests; see Net::SFTP::Operations::ResumableUpload for the full
+      # semantics and the supported options (notably <tt>:checkpoint</tt>,
+      # <tt>:block_size</tt>, and <tt>:restart</tt>).
+      #
+      #   uploader = sftp.upload_resumable("local", "remote",
+      #                                     :checkpoint => "local.ckpt")
+      #   uploader.wait
+      def upload_resumable(local, remote = File.basename(local), options={}, &block)
+        Operations::ResumableUpload.new(self, local, remote, options, &block)
+      end
+
+      # Identical to #upload_resumable, but blocks until the upload is
+      # complete.
+      def upload_resumable!(local, remote = File.basename(local), options={}, &block)
+        upload_resumable(local, remote, options, &block).wait
       end
 
       # Initiates a download from +remote+ to +local+, asynchronously. This
