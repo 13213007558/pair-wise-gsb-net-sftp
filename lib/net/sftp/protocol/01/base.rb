@@ -92,8 +92,12 @@ module Net; module SFTP; module Protocol; module V01
 
     # Sends a FXP_CLOSE packet to the server for the given +handle+ (such as
     # would be returned via a FXP_HANDLE packet). Returns the new packet id.
-    def close(handle)
-      send_request(FXP_CLOSE, :string, handle)
+    def close(handle, id=nil)
+      if id
+        send_request_with_id(FXP_CLOSE, id, :string, handle)
+      else
+        send_request(FXP_CLOSE, :string, handle)
+      end
     end
 
     # Sends a FXP_READ packet to the server, requesting that +length+ bytes

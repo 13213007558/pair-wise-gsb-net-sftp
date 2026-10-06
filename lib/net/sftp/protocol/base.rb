@@ -35,15 +35,27 @@ module Net; module SFTP; module Protocol
       end
     end
 
+    # Allocates and returns the next request identifier without sending a
+    # packet. This is used when a request must be registered before its
+    # packet can be sent.
+    def next_request_id
+      @request_id_counter += 1
+    end
+
+    # Send a request using an identifier previously allocated with
+    # #next_request_id.
+    def send_request_with_id(type, id, *args)
+      session.send_packet(type, :long, id, *args)
+      id
+    end
+
     private
 
       # Send a new packet of the given type, and with the given data arguments.
       # A new request identifier will be allocated to this request, and will
       # be returned.
       def send_request(type, *args)
-        @request_id_counter += 1
-        session.send_packet(type, :long, @request_id_counter, *args)
-        return @request_id_counter
+        send_request_with_id(type, next_request_id, *args)
       end
   end
 

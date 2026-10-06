@@ -36,4 +36,14 @@ module Net; module SFTP
     end
 
   end
+
+  # Raised by synchronous lock operations when the server reports an
+  # FX_LOCK_CONFLICT status. Asynchronous operations receive the response in
+  # their callback instead of raising this exception.
+  class LockConflictException < StatusException; end
+
+  # Raised by synchronous operations when a request is left without a server
+  # response because the SFTP connection was interrupted. Asynchronous
+  # callbacks receive an FX_CONNECTION_LOST response instead.
+  class ConnectionLostException < StatusException; end
 end; end

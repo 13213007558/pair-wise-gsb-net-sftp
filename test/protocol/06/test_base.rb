@@ -34,6 +34,12 @@ class Protocol::V06::TestBase < Protocol::V05::TestBase
     assert_equal 0, @base.block("handle", 1234, 4567, 0x40)
   end
 
+  def test_block_should_send_combined_read_write_delete_lock_mask
+    mask = LockTypes::READ | LockTypes::WRITE | LockTypes::DELETE
+    @session.expects(:send_packet).with(FXP_BLOCK, :long, 0, :string, "handle", :int64, 1234, :int64, LockRanges::TO_EOF, :long, mask)
+    assert_equal 0, @base.block("handle", 1234, LockRanges::TO_EOF, mask)
+  end
+
   def test_unblock_should_send_unblock_packet
     @session.expects(:send_packet).with(FXP_UNBLOCK, :long, 0, :string, "handle", :int64, 1234, :int64, 4567)
     assert_equal 0, @base.unblock("handle", 1234, 4567)

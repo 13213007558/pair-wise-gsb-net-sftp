@@ -50,4 +50,14 @@ class ResponseTest < Net::SFTP::TestCase
     response = Net::SFTP::Response.new(mock("response"), :code => 14)
     assert_equal false, response.eof?
   end
+
+  def test_lock_conflict_should_be_true_when_code_is_FX_LOCK_CONFLICT
+    response = Net::SFTP::Response.new(mock("response"), :code => 17)
+    assert_equal true, response.lock_conflict?
+  end
+
+  def test_lock_conflict_should_be_false_for_connection_lost
+    response = Net::SFTP::Response.new(mock("response"), :code => 7)
+    assert_equal false, response.lock_conflict?
+  end
 end

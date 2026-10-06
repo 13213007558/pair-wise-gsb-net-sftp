@@ -64,6 +64,13 @@ module Net; module SFTP
       code == FX_EOF
     end
 
+    # Returns +true+ if the status code is FX_LOCK_CONFLICT; +false+
+    # otherwise. A lock conflict is an ordinary response to a block request,
+    # not a transport failure.
+    def lock_conflict?
+      code == FX_LOCK_CONFLICT
+    end
+
     #--
     MAP = constants.inject({}) do |memo, name|
       next memo unless name =~ /^FX_(.*)/

@@ -73,7 +73,8 @@ module Net module SFTP
       FX_NO_SPACE_ON_FILESYSTEM = 14
       FX_QUOTA_EXCEEDED         = 15
       FX_UNKNOWN_PRINCIPLE      = 16
-      FX_LOCK_CONFlICT          = 17
+      FX_LOCK_CONFLICT          = 17
+      FX_LOCK_CONFlICT          = FX_LOCK_CONFLICT
       FX_DIR_NOT_EMPTY          = 18
       FX_NOT_A_DIRECTORY        = 19
       FX_INVALID_FILENAME       = 20
@@ -135,6 +136,13 @@ module Net module SFTP
       WRITE    = OpenFlags::FV5::WRITE_LOCK
       DELETE   = OpenFlags::FV5::DELETE_LOCK
       ADVISORY = OpenFlags::FV6::ADVISORY_LOCK
+    end
+
+    # Byte ranges used by version 6 block and unblock requests. A zero
+    # length means that the range extends from the offset to the end of the
+    # file, even as the file grows.
+    module LockRanges
+      TO_EOF = 0
     end
 
     module ACE

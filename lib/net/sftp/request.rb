@@ -83,7 +83,14 @@ module Net; module SFTP
         data = session.protocol.parse(packet)
         data[:type] = packet.type
         @response = Response.new(self, data)
+        session.send(:prepare_response, self) if session.respond_to?(:prepare_response, true)
+        callback.call(@response) if callback
+      end
 
+      # Deliver a locally synthesized response, such as FX_CONNECTION_LOST when
+      # the channel is closed before the server answers.
+      def respond_with_data(data) #:nodoc:
+        @response = Response.new(self, data)
         callback.call(@response) if callback
       end
   end

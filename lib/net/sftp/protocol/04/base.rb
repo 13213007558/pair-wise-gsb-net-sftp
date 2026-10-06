@@ -22,6 +22,20 @@ module Net; module SFTP; module Protocol; module V04
       4
     end
 
+    # Parses the version 4 and later FXP_STATUS packet format. The message and
+    # language tag are optional when reading leniently so that a server using
+    # the older short format still works.
+    def parse_status_packet(packet)
+      data = { :code => packet.read_long }
+
+      unless packet.eof?
+        data[:message] = packet.read_string
+        data[:language] = packet.read_string unless packet.eof?
+      end
+
+      data
+    end
+
     # As of v4 of the SFTP protocol, the "longname" member was removed from the
     # FXP_NAME structure. This method is essentially the same as the previous
     # implementation, but omits longname.

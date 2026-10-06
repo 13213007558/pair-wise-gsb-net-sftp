@@ -28,6 +28,21 @@ class Protocol::V04::TestBase < Protocol::V03::TestBase
     assert_equal 0550, names.last.attributes.permissions
   end
 
+  def test_parse_status_packet_should_read_code_message_and_language
+    packet = Net::SSH::Buffer.from(:long, 17, :string, "lock conflict", :string, "en")
+
+    assert_equal({
+      :code => 17,
+      :message => "lock conflict",
+      :language => "en"
+    }, @base.parse_status_packet(packet))
+  end
+
+  def test_parse_status_packet_should_accept_legacy_code_only_packet
+    packet = Net::SSH::Buffer.from(:long, 17)
+    assert_equal({ :code => 17 }, @base.parse_status_packet(packet))
+  end
+
   undef test_fstat_should_ignore_flags_parameter
   undef test_lstat_should_ignore_flags_parameter
   undef test_stat_should_ignore_flags_parameter
