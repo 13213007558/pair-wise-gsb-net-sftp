@@ -59,6 +59,28 @@ In a nutshell:
 
 For the full documentation, start with Net::SFTP::Session. Also see Net::SFTP::Operations::Upload, Net::SFTP::Operations::Download, Net::SFTP::Operations::FileFactory, Net::SFTP::Operations::File, and Net::SFTP::Operations::Dir.
 
+== RESUMABLE UPLOADS:
+
+A connection can drop before an upload finishes. Rather than trusting a
+local byte offset (the remote file may have been replaced in the
+meantime), +resume_upload!+ persists a checkpoint and, on the next
+connection, reads each previously written block back from the server with
+ordinary SFTP READ requests and compares a content digest. Only blocks
+that cannot be confirmed are retransmitted, and the ranges that need
+sending are reported through the +:retransmit+ progress event. Multiple
+disjoint completed ranges are supported. If the remote file changes
+while verification is in progress, the transfer aborts with
+Net::SFTP::RemoteChangedError instead of mixing two versions together.
+
+  Net::SFTP.start('host', 'username', :password => 'password') do |sftp|
+    # run the same command again after a dropped connection to resume
+    sftp.resume_upload!("/path/to/local", "/path/to/remote",
+                       :checkpoint => "/path/to/local.ckpt")
+  end
+
+See Net::SFTP::Operations::ResumableUpload and
+Net::SFTP::Resume::Checkpoint.
+
 == REQUIREMENTS:
 
 * Net::SSH 2

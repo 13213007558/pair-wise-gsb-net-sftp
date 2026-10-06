@@ -7,6 +7,7 @@ require 'net/sftp/operations/dir'
 require 'net/sftp/operations/upload'
 require 'net/sftp/operations/download'
 require 'net/sftp/operations/file_factory'
+require 'net/sftp/operations/resumable_upload'
 
 module Net; module SFTP
 
@@ -103,6 +104,25 @@ module Net; module SFTP
       # Identical to #upload, but blocks until the upload is complete.
       def upload!(local, remote = File.basename(local), options={}, &block)
         upload(local, remote, options, &block).wait
+      end
+
+      # Initiates a resumable, content-verified upload from +local+ to
+      # +remote+, asynchronously. Blocks recorded in the given checkpoint
+      # are read back from the server with ordinary SFTP READ requests and
+      # checked by content digest before being skipped; only unconfirmed
+      # ranges are retransmitted. See
+      # Net::SFTP::Operations::ResumableUpload for the supported options.
+      #
+      #   uploader = sftp.resume_upload("big.bin", "/remote/big.bin",
+      #                                :checkpoint => "big.bin.ckpt")
+      #   uploader.wait
+      def resume_upload(local, remote = File.basename(local), options={}, &block)
+        Operations::ResumableUpload.new(self, local, remote, options, &block)
+      end
+
+      # Identical to #resume_upload, but blocks until the upload is complete.
+      def resume_upload!(local, remote = File.basename(local), options={}, &block)
+        resume_upload(local, remote, options, &block).wait
       end
 
       # Initiates a download from +remote+ to +local+, asynchronously. This
