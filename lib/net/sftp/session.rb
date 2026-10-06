@@ -45,6 +45,8 @@ module Net; module SFTP
   class Session
     include Net::SSH::Loggable
     include Net::SFTP::Constants::PacketTypes
+    include Net::SFTP::Constants::StatusCodes
+    include Net::SFTP::Constants::Extensions
 
     # The highest protocol version supported by the Net::SFTP library.
     HIGHEST_PROTOCOL_VERSION_SUPPORTED = 6
@@ -68,6 +70,9 @@ module Net; module SFTP
     # the server has not yet responded to will be represented here.
     attr_reader :pending_requests
 
+    # The extension name/value pairs returned during version negotiation.
+    attr_reader :extensions
+
     # Creates a new Net::SFTP instance atop the given Net::SSH connection.
     # This will return immediately, before the SFTP connection has been properly
     # initialized. Once the connection is ready, the given block will be called.
@@ -82,6 +87,7 @@ module Net; module SFTP
       self.logger = session.logger
       @state      = :closed
       @pending_requests = {}
+      @extensions = {}
 
       connect(&block)
     end
@@ -282,6 +288,72 @@ module Net; module SFTP
       #   sftp.write!(handle, 0, "hello, world!\n")
       def write!(handle, offset, data, &callback)
         wait_for(write(handle, offset, data, &callback))
+      end
+
+      # :call-seq:
+      #   copy_data(source_handle, source_offset, length, destination_handle, destination_offset, options={}) -> request
+      #
+      # Copies +length+ bytes between two already-open handles. Servers that
+      # advertise the OpenSSH +copy-data+ extension perform the copy remotely.
+      # Other servers use bounded read/write requests. Overlapping ranges on
+      # one handle use memmove semantics. The response contains the actual
+      # completed range in +:source_offset+, +:destination_offset+, and
+      # +:bytes_copied+.
+      def copy_data(source_handle, source_offset, length, destination_handle, destination_offset, options={}, &callback)
+        raise ArgumentError, "offset cannot be negative" if source_offset < 0 || destination_offset < 0
+        raise ArgumentError, "length cannot be negative" if length < 0
+
+        state = {
+          :source_handle => source_handle,
+          :source_offset => source_offset,
+          :destination_handle => destination_handle,
+          :destination_offset => destination_offset,
+          :length => length,
+          :copied => 0,
+          :read_size => (options[:read_size] || options[:chunk_size] || 32_000).to_i,
+          :direction => copy_data_direction(source_handle, source_offset, destination_handle, destination_offset, length),
+          :callback => callback
+        }
+
+        raise ArgumentError, "read size must be greater than zero" if state[:read_size] <= 0
+
+        if extensions.key?(COPY_DATA)
+          id = protocol.copy_data(source_handle, source_offset, length, destination_handle, destination_offset)
+          request = Request.new(self, :copy_data, id) do |response|
+            if copy_unsupported?(response)
+              request.composite = true
+              request.instance_variable_set(:@response, nil)
+              fallback_request = Request.new(self, :copy_data, -1, &state[:callback])
+              state[:request] = fallback_request
+              state[:parent_request] = request
+              start_copy_data_fallback(fallback_request, state)
+            else
+              finish_copy_data(request, state, response.data.merge(:code => response.code, :message => response.message))
+            end
+          end
+          state[:request] = request
+          pending_requests[id] = request
+        else
+          request = Request.new(self, :copy_data, 0, &callback)
+          request.composite = true
+          state[:request] = request
+          start_copy_data_fallback(request, state)
+        end
+
+        request
+      end
+
+      # Identical to #copy_data, but blocks until completion. Unlike most bang
+      # operations, a failed read or write does not raise; the returned
+      # response carries the failure and the range that was completed first.
+      def copy_data!(source_handle, source_offset, length, destination_handle, destination_offset, options={}, &callback)
+        completed = nil
+        request = copy_data(source_handle, source_offset, length, destination_handle, destination_offset, options) do |response|
+          completed = response
+          callback.call(response) if callback
+        end
+        request.wait
+        completed || request.response
       end
 
       # :call-seq:
@@ -774,6 +846,7 @@ module Net; module SFTP
           @channel = session.open_channel(&method(:when_channel_confirmed))
           @packet_length = nil
           @protocol = nil
+          @extensions = {}
           @on_ready = Array(block)
         else # opening
           @on_ready << block if block
@@ -832,6 +905,149 @@ module Net; module SFTP
         request = Request.new(self, type, protocol.send(type, *args), &callback)
         info { "sending #{type} packet (#{request.id})" }
         pending_requests[request.id] = request
+      end
+
+      def copy_data_direction(source_handle, source_offset, destination_handle, destination_offset, length)
+        if source_handle == destination_handle &&
+            destination_offset > source_offset &&
+            destination_offset < source_offset + length
+          :backward
+        else
+          :forward
+        end
+      end
+
+      def start_copy_data_fallback(request, state)
+        request.composite = true
+        request.instance_variable_set(:@id, -1)
+        read_next_copy_data_chunk(state)
+        request
+      end
+
+      def read_next_copy_data_chunk(state)
+        return complete_copy_data(state, FX_OK) if state[:eof]
+
+        remaining = state[:length] - state[:copied]
+        return complete_copy_data(state, FX_OK) if remaining == 0
+
+        if state[:direction] == :backward
+          read_backward_copy_data_chunk(state, remaining)
+        else
+          read_forward_copy_data_chunk(state, remaining)
+        end
+      end
+
+      def read_forward_copy_data_chunk(state, remaining)
+        size = [state[:read_size], remaining].min
+        read_offset = state[:source_offset] + state[:copied]
+        destination_offset = state[:destination_offset] + state[:copied]
+
+        read(state[:source_handle], read_offset, size) do |response|
+          if response.eof?
+            complete_copy_data(state, FX_OK)
+          elsif !response.ok?
+            complete_copy_data(state, response.code, response.message)
+          elsif response[:data].bytesize == 0
+            read_next_copy_data_chunk(state)
+          else
+            write_copy_data_chunk(state, destination_offset, response[:data])
+          end
+        end
+      end
+
+      def read_backward_copy_data_chunk(state, remaining)
+        chunk = state[:active_chunk]
+
+        if chunk.nil?
+          size = [state[:read_size], remaining].min
+          chunk = {
+            :source_offset => state[:source_offset] + remaining - size,
+            :destination_offset => state[:destination_offset] + remaining - size,
+            :size => size,
+            :data => "".dup
+          }
+          state[:active_chunk] = chunk
+        end
+
+        gathered = chunk[:data].bytesize
+        read_offset = chunk[:source_offset] + gathered
+
+        read(state[:source_handle], read_offset, chunk[:size] - gathered) do |response|
+          if response.eof?
+            if chunk[:data].empty?
+              complete_copy_data(state, FX_OK)
+            else
+              state[:eof] = true
+              write_backward_copy_data_chunk(state, chunk)
+            end
+          elsif !response.ok?
+            complete_copy_data(state, response.code, response.message)
+          elsif response[:data].bytesize == 0
+            read_next_copy_data_chunk(state)
+          else
+            chunk[:data] << response[:data]
+            if chunk[:data].bytesize == chunk[:size]
+              write_backward_copy_data_chunk(state, chunk)
+            else
+              read_next_copy_data_chunk(state)
+            end
+          end
+        end
+      end
+
+      def write_backward_copy_data_chunk(state, chunk)
+        write(state[:destination_handle], chunk[:destination_offset], chunk[:data]) do |response|
+          if response.ok?
+            state[:copied] += chunk[:data].bytesize
+            state[:active_chunk] = nil
+            read_next_copy_data_chunk(state)
+          else
+            complete_copy_data(state, response.code, response.message)
+          end
+        end
+      end
+
+      def write_copy_data_chunk(state, destination_offset, data)
+        write(state[:destination_handle], destination_offset, data) do |response|
+          if response.ok?
+            state[:copied] += data.bytesize
+            read_next_copy_data_chunk(state)
+          else
+            complete_copy_data(state, response.code, response.message)
+          end
+        end
+      end
+
+      def copy_unsupported?(response)
+        !response.ok? && response.code == FX_OP_UNSUPPORTED
+      end
+
+      def finish_copy_data(request, state, data)
+        request.instance_variable_set(:@callback, state[:callback])
+        request.respond_with(copy_data_result(state, data[:code] == FX_OK ? state[:length] : 0, data[:code], data[:message]))
+        pending_requests.delete(request.id)
+      end
+
+      def complete_copy_data(state, code, message=nil)
+        request = state[:request]
+        response_data = copy_data_result(state, state[:copied], code, message)
+        request.respond_with(response_data)
+        if state[:parent_request] && state[:parent_request] != request
+          state[:parent_request].instance_variable_set(:@response, request.response)
+        end
+        pending_requests.delete(request.id)
+      end
+
+      def copy_data_result(state, copied, code, message)
+        result = {
+          :source_offset => state[:source_offset],
+          :destination_offset => state[:destination_offset],
+          :length => state[:length],
+          :bytes_copied => copied,
+          :code => code
+        }
+        result[:message] = message if message
+        result
       end
 
       # Waits for the given request to complete. If the response is
@@ -927,11 +1143,11 @@ module Net; module SFTP
         negotiated_version = [server_version, HIGHEST_PROTOCOL_VERSION_SUPPORTED].min
         info { "negotiated version is #{negotiated_version}" }
 
-        extensions = {}
+        @extensions = {}
         until packet.eof?
           name = packet.read_string
           data = packet.read_string
-          extensions[name] = data
+          @extensions[name] = data
         end
 
         @protocol = Protocol.load(self, negotiated_version)

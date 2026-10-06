@@ -53,6 +53,12 @@ module Net module SFTP
       NATIVE    = 0x00000004
     end
 
+    # Names of SFTP extensions that Net::SFTP understands.
+    module Extensions
+      # The OpenSSH server-to-server copy extension.
+      COPY_DATA = "copy-data"
+    end
+
     # When an FXP_STATUS packet is received from the server, the +code+ will
     # be one of the following constants.
     module StatusCodes

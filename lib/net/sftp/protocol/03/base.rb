@@ -12,6 +12,17 @@ module Net; module SFTP; module Protocol; module V03
   # see Net::SFTP::Session for the recommended interface.
   class Base < V02::Base
 
+    # Parses the v3 status fields and returns the numeric code, message, and
+    # language tag. Older servers may omit the optional trailing fields.
+    def parse_status_packet(packet)
+      result = { :code => packet.read_long }
+      unless packet.eof?
+        result[:message] = packet.read_string
+        result[:language] = packet.read_string unless packet.eof?
+      end
+      result
+    end
+
     # Returns the protocol version implemented by this driver. (3, in this
     # case)
     def version

@@ -31,8 +31,24 @@ module Net; module SFTP; module Protocol
       when FXP_DATA   then parse_data_packet(packet)
       when FXP_NAME   then parse_name_packet(packet)
       when FXP_ATTRS  then parse_attrs_packet(packet)
+      when FXP_EXTENDED_REPLY then parse_extended_reply_packet(packet)
       else raise NotImplementedError, "unknown packet type: #{packet.type}"
       end
+    end
+
+    # Sends an FXP_EXTENDED request.
+    def extended(name, *fields)
+      send_request(FXP_EXTENDED, :string, name, *fields)
+    end
+
+    # Returns the next request id without sending a packet.
+    def next_request_id
+      @request_id_counter += 1
+    end
+
+    # The copy-data extension currently returns no extension-specific data.
+    def parse_extended_reply_packet(packet)
+      {}
     end
 
     private
@@ -41,9 +57,9 @@ module Net; module SFTP; module Protocol
       # A new request identifier will be allocated to this request, and will
       # be returned.
       def send_request(type, *args)
-        @request_id_counter += 1
-        session.send_packet(type, :long, @request_id_counter, *args)
-        return @request_id_counter
+        id = next_request_id
+        session.send_packet(type, :long, id, *args)
+        id
       end
   end
 

@@ -104,6 +104,16 @@ module Net; module SFTP; module Protocol; module V01
       send_request(FXP_READ, :string, handle, :int64, offset, :long, length)
     end
 
+    # Sends the OpenSSH copy-data extended request.
+    def copy_data(read_handle, read_offset, read_length, write_handle, write_offset)
+      extended(Extensions::COPY_DATA,
+        :string, read_handle,
+        :int64, read_offset,
+        :int64, read_length,
+        :string, write_handle,
+        :int64, write_offset)
+    end
+
     # Sends a FXP_WRITE packet to the server, requesting that +data+ (a string),
     # be written to the file identified by +handle+, starting at +offset+ bytes
     # from the beginning of the file. The handle must be one that was returned

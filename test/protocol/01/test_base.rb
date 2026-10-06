@@ -104,6 +104,25 @@ class Protocol::V01::TestBase < Net::SFTP::TestCase
     assert_equal 0, @base.write("handle", 1234, "data")
   end
 
+  def test_extended_should_send_extended_packet
+    @session.expects(:send_packet).with(FXP_EXTENDED, :long, 0, :string, "custom", :long, 7)
+    assert_equal 0, @base.extended("custom", :long, 7)
+  end
+
+  def test_copy_data_should_send_openssh_copy_data_extension_packet
+    @session.expects(:send_packet).with(FXP_EXTENDED, :long, 0,
+      :string, Net::SFTP::Constants::Extensions::COPY_DATA,
+      :string, "source", :int64, 10, :int64, 20,
+      :string, "destination", :int64, 30)
+
+    assert_equal 0, @base.copy_data("source", 10, 20, "destination", 30)
+  end
+
+  def test_parse_extended_reply_packet_should_return_empty_data
+    packet = Net::SSH::Buffer.from(:string, "ignored")
+    assert_equal({}, @base.parse_extended_reply_packet(packet))
+  end
+
   def test_lstat_should_send_lstat_packet
     @session.expects(:send_packet).with(FXP_LSTAT, :long, 0, :string, "/path/to/file")
     assert_equal 0, @base.lstat("/path/to/file")

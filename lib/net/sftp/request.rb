@@ -36,6 +36,9 @@ module Net; module SFTP
     # The response that was received for this request (see Net::SFTP::Response)
     attr_reader :response
 
+    # True for higher-level operations composed of multiple SFTP requests.
+    attr_writer :composite
+
     # Instantiate a new Request object, serviced by the given +session+, and
     # being of the given +type+. The +id+ is the packet identifier for this
     # request.
@@ -43,6 +46,7 @@ module Net; module SFTP
       @session, @id, @type, @callback = session, id, type, callback
       @response = nil
       @properties = {}
+      @composite = false
     end
 
     # Returns the value of property with the given +key+. If +key+ is not a
@@ -61,7 +65,13 @@ module Net; module SFTP
     # server, and +false+ otherwise. The SSH event loop must be run in order
     # for a request to be processed; see #wait.
     def pending?
+      return @response.nil? if @composite
       session.pending_requests.key?(id)
+    end
+
+    # Returns +true+ for operations composed of multiple SFTP requests.
+    def composite?
+      @composite
     end
 
     # Waits (blocks) until the server responds to this packet. If prior
@@ -69,11 +79,17 @@ module Net; module SFTP
     # SFTP packets are processed in the order in which they are received by
     # the server). Returns the request object itself.
     def wait
-      session.loop { pending? }
+      session.loop { response.nil? }
       self
     end
 
     public # but not "published". Internal use only
+
+      # Responds to a composite operation assembled locally.
+      def respond_with(data) #:nodoc:
+        @response = Response.new(self, data)
+        callback.call(@response) if callback
+      end
 
       # When the server responds to this request, the packet is passed to
       # this method, which parses the packet and builds a Net::SFTP::Response

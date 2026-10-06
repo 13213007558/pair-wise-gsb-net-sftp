@@ -155,6 +155,166 @@ class SessionTest < Net::SFTP::TestCase
     assert response.ok?
   end
 
+  def test_version_negotiation_should_retain_extension_information
+    expect_sftp_session(:extensions => { "copy-data" => "1", "other" => "value" })
+    assert_scripted { sftp.connect! }
+    assert_equal({ "copy-data" => "1", "other" => "value" }, sftp.extensions)
+  end
+
+  def test_copy_data_with_extension_should_send_single_extended_request
+    expect_sftp_session(:extensions => { "copy-data" => "" }) do |channel|
+      channel.sends_packet(FXP_EXTENDED, :long, 0,
+        :string, "copy-data",
+        :string, "source", :int64, 10, :int64, 20,
+        :string, "destination", :int64, 30)
+      channel.gets_packet(FXP_EXTENDED_REPLY, :long, 0)
+    end
+
+    response = nil
+    assert_scripted_command do
+      response = sftp.copy_data!("source", 10, 20, "destination", 30)
+    end
+
+    assert response.ok?
+    assert_equal 10, response[:source_offset]
+    assert_equal 30, response[:destination_offset]
+    assert_equal 20, response[:bytes_copied]
+  end
+
+  def test_fallback_copy_data_forward_should_match_memmove_semantics
+    result = run_fallback_copy(4, 4, 0, 2)
+    assert_equal "efghefgh", result
+  end
+
+  def test_fallback_copy_data_backward_should_match_memmove_semantics
+    result = run_fallback_copy(0, 4, 4, 2)
+    assert_equal "abcdabcd", result
+  end
+
+  def test_fallback_copy_data_short_read_at_eof_reports_completed_range
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "source", :int64, 6, :long, 4)
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "gh")
+      channel.sends_packet(FXP_WRITE, :long, 1, :string, "destination", :int64, 6, :string, "gh")
+      channel.gets_packet(FXP_STATUS, :long, 1, :long, 0)
+      channel.sends_packet(FXP_READ, :long, 2, :string, "source", :int64, 8, :long, 2)
+      channel.gets_packet(FXP_STATUS, :long, 2, :long, 1)
+    end
+
+    response = nil
+    assert_scripted_command do
+      response = sftp.copy_data!("source", 6, 4, "destination", 6, :read_size => 4)
+    end
+
+    assert response.ok?
+    assert_equal 2, response[:bytes_copied]
+  end
+
+  def test_fallback_backward_copy_data_should_continue_after_short_read
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "handle", :int64, 1, :long, 3)
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "bc")
+      channel.sends_packet(FXP_READ, :long, 1, :string, "handle", :int64, 3, :long, 1)
+      channel.gets_packet(FXP_DATA, :long, 1, :string, "d")
+      channel.sends_packet(FXP_WRITE, :long, 2, :string, "handle", :int64, 3, :string, "bcd")
+      channel.gets_packet(FXP_STATUS, :long, 2, :long, 0)
+      channel.sends_packet(FXP_READ, :long, 3, :string, "handle", :int64, 0, :long, 1)
+      channel.gets_packet(FXP_DATA, :long, 3, :string, "a")
+      channel.sends_packet(FXP_WRITE, :long, 4, :string, "handle", :int64, 2, :string, "a")
+      channel.gets_packet(FXP_STATUS, :long, 4, :long, 0)
+    end
+
+    response = nil
+    assert_scripted_command do
+      response = sftp.copy_data!("handle", 0, 4, "handle", 2, :read_size => 3)
+    end
+
+    assert response.ok?
+    assert_equal 4, response[:bytes_copied]
+  end
+
+  def test_fallback_copy_data_write_failure_reports_prefix
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "source", :int64, 0, :long, 3)
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "abc")
+      channel.sends_packet(FXP_WRITE, :long, 1, :string, "destination", :int64, 5, :string, "abc")
+      channel.gets_packet(FXP_STATUS, :long, 1, :long, 4)
+    end
+
+    response = nil
+    assert_scripted_command do
+      response = sftp.copy_data!("source", 0, 6, "destination", 5, :read_size => 3)
+    end
+
+    assert_equal 4, response.code
+    assert_equal 0, response[:bytes_copied]
+  end
+
+  def test_fallback_copy_data_later_write_failure_reports_completed_prefix
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "source", :int64, 0, :long, 2)
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "ab")
+      channel.sends_packet(FXP_WRITE, :long, 1, :string, "destination", :int64, 0, :string, "ab")
+      channel.gets_packet(FXP_STATUS, :long, 1, :long, 0)
+      channel.sends_packet(FXP_READ, :long, 2, :string, "source", :int64, 2, :long, 2)
+      channel.gets_packet(FXP_DATA, :long, 2, :string, "cd")
+      channel.sends_packet(FXP_WRITE, :long, 3, :string, "destination", :int64, 2, :string, "cd")
+      channel.gets_packet(FXP_STATUS, :long, 3, :long, 14)
+    end
+
+    response = nil
+    assert_scripted_command do
+      response = sftp.copy_data!("source", 0, 4, "destination", 0, :read_size => 2)
+    end
+
+    assert_equal 14, response.code
+    assert_equal 2, response[:bytes_copied]
+  end
+
+  def test_copy_data_fallback_should_keep_parallel_request_ids_independent
+    events = []
+    expect_sftp_session do |channel|
+      channel.sends_packet(FXP_READ, :long, 0, :string, "other", :int64, 0, :long, 1)
+      channel.sends_packet(FXP_READ, :long, 1, :string, "source", :int64, 0, :long, 3)
+      channel.gets_packet(FXP_DATA, :long, 1, :string, "abc")
+      channel.sends_packet(FXP_WRITE, :long, 2, :string, "destination", :int64, 0, :string, "abc")
+      channel.gets_packet(FXP_DATA, :long, 0, :string, "x")
+      channel.gets_packet(FXP_STATUS, :long, 2, :long, 0)
+    end
+
+    assert_scripted_command do
+      other = sftp.read("other", 0, 1) { |response| events << [:other, response[:data]] }
+      copy = sftp.copy_data("source", 0, 3, "destination", 0, :read_size => 3) do |response|
+        events << [:copy, response[:bytes_copied]]
+      end
+      sftp.loop { [other, copy].any?(&:pending?) }
+    end
+
+    assert_equal [[:other, "x"], [:copy, 3]], events
+  end
+
+  def test_advertised_but_unsupported_copy_data_extension_falls_back
+    expect_sftp_session(:extensions => { "copy-data" => "" }) do |channel|
+      channel.sends_packet(FXP_EXTENDED, :long, 0,
+        :string, "copy-data",
+        :string, "source", :int64, 0, :int64, 3,
+        :string, "destination", :int64, 3)
+      channel.gets_packet(FXP_STATUS, :long, 0, :long, 8)
+      channel.sends_packet(FXP_READ, :long, 1, :string, "source", :int64, 0, :long, 3)
+      channel.gets_packet(FXP_DATA, :long, 1, :string, "abc")
+      channel.sends_packet(FXP_WRITE, :long, 2, :string, "destination", :int64, 3, :string, "abc")
+      channel.gets_packet(FXP_STATUS, :long, 2, :long, 0)
+    end
+
+    response = nil
+    assert_scripted_command do
+      response = sftp.copy_data!("source", 0, 3, "destination", 3, :read_size => 3)
+    end
+
+    assert response.ok?
+    assert_equal 3, response[:bytes_copied]
+  end
+
   def test_v1_lstat_should_send_lstat_request_and_invoke_callback
     expect_sftp_session :server_version => 1 do |channel|
       channel.sends_packet(FXP_LSTAT, :long, 0, :string, "/path/to/file")
@@ -705,7 +865,7 @@ class SessionTest < Net::SFTP::TestCase
       end
     end
 
-    def expect_open(path, mode, perms, options={})
+  def expect_open(path, mode, perms, options={})
       version = options[:server_version] || 6
 
       fail = options.delete(:fail)
@@ -747,5 +907,56 @@ class SessionTest < Net::SFTP::TestCase
           channel.gets_packet(FXP_HANDLE, :long, 0, :string, "handle")
         end
       end
+    end
+
+    def run_fallback_copy(source_offset, length, destination_offset, read_size)
+      content = +"abcdefgh"
+      chunks = (length.to_f / read_size).ceil
+      backward = destination_offset > source_offset &&
+        destination_offset < source_offset + length
+
+      expect_sftp_session do |channel|
+        chunks.times do |index|
+          if backward
+            remaining = length - index * read_size
+            size = [read_size, remaining].min
+            read_offset = source_offset + remaining - size
+            destination = destination_offset + remaining - size
+          else
+            read_offset = source_offset + index * read_size
+            destination = destination_offset + index * read_size
+            size = [read_size, length - index * read_size].min
+          end
+
+          data = content[read_offset, size]
+          channel.sends_packet(FXP_READ, :long, index * 2, :string, "handle", :int64, read_offset, :long, size)
+          channel.gets_packet(FXP_DATA, :long, index * 2, :string, data)
+          channel.sends_packet(FXP_WRITE, :long, index * 2 + 1, :string, "handle", :int64, destination, :string, data)
+          channel.gets_packet(FXP_STATUS, :long, index * 2 + 1, :long, 0)
+        end
+      end
+
+      assert_scripted_command do
+        writes = record_writes
+        sftp.copy_data!("handle", source_offset, length, "handle", destination_offset, :read_size => read_size)
+        writes.each { |offset, data| content[offset, data.bytesize] = data }
+      end
+
+      content
+    end
+
+    def record_writes
+      writes = []
+      session = sftp
+      recorder = Module.new
+      recorder.define_method(:send_packet) do |type, *args|
+        if type == FXP_WRITE
+          values = args.each_slice(2).map(&:last)
+          writes << [values[2], values[3]]
+        end
+        super(type, *args)
+      end
+      session.extend(recorder)
+      writes
     end
 end
