@@ -1,4 +1,5 @@
 CHANGELOG.rdoc
+lib/net/sftp/acl_interpreter.rb
 lib/net/sftp/constants.rb
 lib/net/sftp/errors.rb
 lib/net/sftp/operations/dir.rb
@@ -41,6 +42,7 @@ test/protocol/05/test_base.rb
 test/protocol/06/test_attributes.rb
 test/protocol/06/test_base.rb
 test/protocol/test_base.rb
+test/test_acl_interpreter.rb
 test/test_all.rb
 test/test_dir.rb
 test/test_download.rb
